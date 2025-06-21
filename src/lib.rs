@@ -127,20 +127,17 @@ where
         let mut txs = Vec::with_capacity(n + 1);
         let mut rxs = Vec::with_capacity(n + 1);
 
-        // 1) allocate N+1 channels
         for _ in 0..=n {
             let (tx, rx) = async_channel::unbounded::<Box<dyn Any + Send + Sync>>();
             txs.push(tx);
             rxs.push(rx);
         }
 
-        // 2) wire each pipe: channel[i] → channel[i+1]
         for (i, pipe) in self.pipes.into_iter().enumerate() {
             let ctx = Context::new(rxs[i].clone(), txs[i + 1].clone());
             pipe.run_box(ctx);
         }
 
-        // 3) return (final‐receiver, first‐sender)
         let final_receiver = PipelineInput::new(rxs[n].clone());
         let first_sender = PipelineOutput::new(txs[0].clone());
         (final_receiver, first_sender)
@@ -257,6 +254,7 @@ mod tests {
             }
         }
 
+        #[derive(Clone)]
         pub struct PersonToPersonWithAgePipe;
         impl Pipeable<Person, PersonWithAge> for PersonToPersonWithAgePipe {
             async fn process(&self, person: Person) -> Option<PersonWithAge> {
@@ -287,7 +285,7 @@ mod tests {
         }
 
         let (input, output) = PipelineBuilder::first(NameToPersonPipe)
-            .then(PersonToPersonWithAgePipe)
+            .then(PersonToPersonWithAgePipe.batch(1000, Duration::from_millis(100)))
             .then(
                 PersonWithAgeToPersonWithAgeAndAddressPipe
                     .batch(1, Duration::from_secs(10))
