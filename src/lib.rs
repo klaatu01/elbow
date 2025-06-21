@@ -1,4 +1,7 @@
+mod collection;
+mod dynamic;
 mod pipeable;
+use dynamic::{DynAdapter, DynPipeline};
 use pipeable::{Context, Pipeable};
 use std::any::Any;
 
@@ -6,7 +9,7 @@ pub struct PipelineMap<I, O, F>
 where
     I: Any + Send + Sync + 'static,
     O: Any + Send + Sync + 'static,
-    F: Fn(I) -> O + Send + Sync + 'static,
+    F: Fn(I) -> Option<O> + Send + Sync + 'static,
 {
     map_fn: F,
     _phantom: std::marker::PhantomData<(I, O)>,
@@ -16,58 +19,33 @@ impl<I, O, F> Pipeable<I, O> for PipelineMap<I, O, F>
 where
     I: Any + Send + Sync + 'static,
     O: Any + Send + Sync + 'static,
-    F: Fn(I) -> O + Send + Sync + 'static,
+    F: Fn(I) -> Option<O> + Send + Sync + 'static,
 {
-    async fn process(&self, input: I) -> O {
+    async fn process(&self, input: I) -> Option<O> {
         (self.map_fn)(input)
     }
 }
 
-pub struct DynAdapter<P, I, O>
+pub struct PipelineFilter<I, F>
 where
-    P: Pipeable<I, O> + Send + Sync + 'static,
     I: Any + Send + Sync + 'static,
-    O: Any + Send + Sync + 'static,
+    F: Fn(&I) -> bool + Send + Sync + 'static,
 {
-    pipe: P,
-    _phantom: std::marker::PhantomData<(I, O)>,
+    filter_fn: F,
+    _phantom: std::marker::PhantomData<I>,
 }
 
-impl<P, I, O> DynAdapter<P, I, O>
+impl<I, F> Pipeable<I, I> for PipelineFilter<I, F>
 where
-    P: Pipeable<I, O> + Send + Sync + 'static,
     I: Any + Send + Sync + 'static,
-    O: Any + Send + Sync + 'static,
+    F: Fn(&I) -> bool + Send + Sync + 'static,
 {
-    pub fn new(pipe: P) -> Self {
-        DynAdapter {
-            pipe,
-            _phantom: std::marker::PhantomData,
+    async fn process(&self, input: I) -> Option<I> {
+        if (self.filter_fn)(&input) {
+            Some(input)
+        } else {
+            None
         }
-    }
-
-    pub fn as_dyn(self) -> Box<dyn DynPipeline> {
-        Box::new(self)
-    }
-}
-
-pub trait DynPipeline: Send + Sync + 'static {
-    fn run_box(self: Box<Self>, ctx: Context);
-}
-
-impl<P, I, O> DynPipeline for DynAdapter<P, I, O>
-where
-    P: Pipeable<I, O> + Send + Sync + 'static,
-    I: Any + Send + Sync + 'static,
-    O: Any + Send + Sync + 'static,
-{
-    fn run_box(self: Box<Self>, ctx: Context) {
-        tokio::spawn(async move {
-            while let Some(input) = ctx.input::<I>().await {
-                let output: O = self.pipe.process(input).await;
-                ctx.output(output).await;
-            }
-        });
     }
 }
 
@@ -79,7 +57,7 @@ impl PipelineBuilder {
         I: Any + Send + Sync + 'static,
         O: Any + Send + Sync + 'static,
     {
-        let dyn_pipe: Box<dyn DynPipeline> = DynAdapter::new(pipe).as_dyn();
+        let dyn_pipe: Box<dyn DynPipeline> = DynAdapter::new(pipe).into_dyn();
         PipelineBuilderThen {
             pipes: vec![dyn_pipe],
             _phantom: std::marker::PhantomData,
@@ -104,7 +82,7 @@ where
     Output: Any + Send + Sync + 'static,
 {
     pub fn new(pipe: impl Pipeable<Input, NextInput> + 'static) -> Self {
-        let dyn_pipe: Box<dyn DynPipeline> = DynAdapter::new(pipe).as_dyn();
+        let dyn_pipe: Box<dyn DynPipeline> = DynAdapter::new(pipe).into_dyn();
         PipelineBuilderThen {
             pipes: vec![dyn_pipe],
             _phantom: std::marker::PhantomData,
@@ -116,7 +94,7 @@ where
         P: Pipeable<Output, O2> + Send + Sync + 'static,
         O2: Any + Send + Sync + 'static,
     {
-        let dyn_pipe: Box<dyn DynPipeline> = DynAdapter::new(pipe).as_dyn();
+        let dyn_pipe: Box<dyn DynPipeline> = DynAdapter::new(pipe).into_dyn();
         let mut pipes = self.pipes;
         pipes.push(dyn_pipe);
         PipelineBuilderThen {
@@ -127,7 +105,7 @@ where
 
     pub fn map<F, O2>(self, map_fn: F) -> PipelineBuilderThen<Input, Output, O2>
     where
-        F: Fn(Output) -> O2 + Send + Sync + 'static,
+        F: Fn(Output) -> Option<O2> + Send + Sync + 'static,
         O2: Any + Send + Sync + 'static,
     {
         let map_pipe = PipelineMap {
@@ -135,7 +113,7 @@ where
             _phantom: std::marker::PhantomData,
         };
 
-        let dyn_pipe: Box<dyn DynPipeline> = DynAdapter::new(map_pipe).as_dyn();
+        let dyn_pipe: Box<dyn DynPipeline> = DynAdapter::new(map_pipe).into_dyn();
         let mut pipes = self.pipes;
         pipes.push(dyn_pipe);
         PipelineBuilderThen {
@@ -220,6 +198,8 @@ pub struct Pipeline;
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use super::*;
 
     #[tokio::test]
@@ -231,14 +211,14 @@ mod tests {
         struct BPipe;
 
         impl Pipeable<A, B> for APipe {
-            async fn process(&self, _: A) -> B {
-                B
+            async fn process(&self, _: A) -> Option<B> {
+                Some(B)
             }
         }
 
         impl Pipeable<B, C> for BPipe {
-            async fn process(&self, _: B) -> C {
-                C
+            async fn process(&self, _: B) -> Option<C> {
+                Some(C)
             }
         }
 
@@ -251,6 +231,8 @@ mod tests {
 
     #[tokio::test]
     async fn complex_pipeline() {
+        use collection::PipelineExt;
+
         pub struct Person {
             name: String,
         }
@@ -269,40 +251,48 @@ mod tests {
         pub struct NameToPersonPipe;
 
         impl Pipeable<String, Person> for NameToPersonPipe {
-            async fn process(&self, name: String) -> Person {
-                Person { name }
+            async fn process(&self, name: String) -> Option<Person> {
+                println!("Converting name to person: {}", name);
+                Some(Person { name })
             }
         }
 
         pub struct PersonToPersonWithAgePipe;
         impl Pipeable<Person, PersonWithAge> for PersonToPersonWithAgePipe {
-            async fn process(&self, person: Person) -> PersonWithAge {
-                PersonWithAge {
+            async fn process(&self, person: Person) -> Option<PersonWithAge> {
+                println!("Processing person: {}", person.name);
+                Some(PersonWithAge {
                     name: person.name,
                     age: 30, // hardcoded for simplicity
-                }
+                })
             }
         }
 
+        #[derive(Clone)]
         pub struct PersonWithAgeToPersonWithAgeAndAddressPipe;
         impl Pipeable<PersonWithAge, PersonWithAgeAndAddress>
             for PersonWithAgeToPersonWithAgeAndAddressPipe
         {
-            async fn process(&self, person: PersonWithAge) -> PersonWithAgeAndAddress {
-                PersonWithAgeAndAddress {
+            async fn process(&self, person: PersonWithAge) -> Option<PersonWithAgeAndAddress> {
+                println!(
+                    "Converting PersonWithAge to PersonWithAgeAndAddress: {}",
+                    person.name
+                );
+                Some(PersonWithAgeAndAddress {
                     name: person.name,
                     age: person.age,
                     address: "123 Main St".to_string(), // hardcoded for simplicity
-                }
+                })
             }
         }
 
         let (input, output) = PipelineBuilder::first(NameToPersonPipe)
-            .map(|person: Person| PersonWithAge {
-                name: person.name,
-                age: 30,
-            })
-            .then(PersonWithAgeToPersonWithAgeAndAddressPipe)
+            .then(PersonToPersonWithAgePipe)
+            .then(
+                PersonWithAgeToPersonWithAgeAndAddressPipe
+                    .batch(1, Duration::from_secs(10))
+                    .concurrent(2),
+            )
             .build();
 
         output.send("Alice".to_string()).await.unwrap();

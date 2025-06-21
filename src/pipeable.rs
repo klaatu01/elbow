@@ -37,8 +37,8 @@ impl<Output: Send + Sync + 'static> PipeOutput<Output> {
 }
 
 pub struct Context {
-    input: async_channel::Receiver<Box<dyn Any + Send + Sync>>,
-    output: async_channel::Sender<Box<dyn Any + Send + Sync>>,
+    pub input_stream: async_channel::Receiver<Box<dyn Any + Send + Sync>>,
+    pub output_stream: async_channel::Sender<Box<dyn Any + Send + Sync>>,
 }
 
 impl Context {
@@ -46,31 +46,39 @@ impl Context {
         input: Receiver<Box<dyn Any + Send + Sync>>,
         output: Sender<Box<dyn Any + Send + Sync>>,
     ) -> Self {
-        Context { input, output }
+        Context {
+            input_stream: input,
+            output_stream: output,
+        }
     }
 
     pub async fn input<T: Any + Send + Sync + 'static>(&self) -> Option<T> {
-        let boxed = self.input.recv().await.ok()?;
+        let boxed = self.input_stream.recv().await.ok()?;
         boxed.downcast::<T>().ok().map(|b| *b)
     }
 
     pub async fn output<T: Any + Send + Sync + 'static>(&self, data: T) {
         let boxed: Box<dyn Any + Send + Sync> = Box::new(data);
-        let _ = self.output.send(boxed).await;
+        let _ = self.output_stream.send(boxed).await;
     }
 }
 
 pub trait Pipeable<Input: Send + Sync + 'static, Output: Send + Sync + 'static>:
     Send + Sync + 'static
 {
-    fn process(&self, input: Input) -> impl Future<Output = Output> + Send;
+    fn process(&self, input: Input) -> impl Future<Output = Option<Output>> + Send;
 
     fn run(self: Box<Self>, context: Context) {
         let pipe = self;
         tokio::spawn(async move {
+            println!("Pipeable started processing...");
             while let Some(input) = context.input().await {
-                let output: Output = pipe.process(input).await;
-                context.output(output).await;
+                if let Some(output) = pipe.process(input).await {
+                    println!("Processed input, sending output...");
+                    context.output(output).await;
+                    println!("Output sent");
+                }
+                println!("Processed input");
             }
         });
     }
@@ -79,21 +87,20 @@ pub trait Pipeable<Input: Send + Sync + 'static, Output: Send + Sync + 'static>:
 #[cfg(test)]
 mod tests {
     use super::*;
-    use async_channel::unbounded;
 
     #[tokio::test]
     async fn test_pipeable() {
         struct TestPipe;
 
         impl Pipeable<i32, i32> for TestPipe {
-            async fn process(&self, input: i32) -> i32 {
-                input * 2
+            async fn process(&self, input: i32) -> Option<i32> {
+                Some(input * 2)
             }
         }
 
         let pipe = Box::new(TestPipe);
         let output = pipe.process(5).await;
 
-        assert_eq!(output, 10);
+        assert_eq!(output, Some(10));
     }
 }
