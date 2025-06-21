@@ -35,6 +35,19 @@ where
     _phantom: std::marker::PhantomData<I>,
 }
 
+impl<I, F> PipelineFilter<I, F>
+where
+    I: Any + Send + Sync + 'static,
+    F: Fn(&I) -> bool + Send + Sync + 'static,
+{
+    pub fn new(filter_fn: F) -> Self {
+        PipelineFilter {
+            filter_fn,
+            _phantom: std::marker::PhantomData,
+        }
+    }
+}
+
 impl<I, F> Pipeable<I, I> for PipelineFilter<I, F>
 where
     I: Any + Send + Sync + 'static,
@@ -259,6 +272,7 @@ mod tests {
         impl Pipeable<Person, PersonWithAge> for PersonToPersonWithAgePipe {
             async fn process(&self, person: Person) -> Option<PersonWithAge> {
                 println!("Processing person: {}", person.name);
+                tokio::time::sleep(Duration::from_secs(1)).await; // Simulate some processing delay
                 Some(PersonWithAge {
                     name: person.name,
                     age: 30, // hardcoded for simplicity
@@ -276,6 +290,7 @@ mod tests {
                     "Converting PersonWithAge to PersonWithAgeAndAddress: {}",
                     person.name
                 );
+                tokio::time::sleep(Duration::from_secs(1)).await; // Simulate some processing delay
                 Some(PersonWithAgeAndAddress {
                     name: person.name,
                     age: person.age,
@@ -285,23 +300,32 @@ mod tests {
         }
 
         let (input, output) = PipelineBuilder::first(NameToPersonPipe)
-            .then(PersonToPersonWithAgePipe.batch(1000, Duration::from_millis(100)))
+            .then(PipelineFilter::new(|p: &Person| p.name.starts_with("1")))
+            .then(
+                PersonToPersonWithAgePipe
+                    .batch(10, Duration::from_millis(100))
+                    .concurrent(4),
+            )
             .then(
                 PersonWithAgeToPersonWithAgeAndAddressPipe
-                    .batch(1, Duration::from_secs(10))
-                    .concurrent(2),
+                    .batch(10, Duration::from_secs(100))
+                    .concurrent(4),
             )
             .build();
 
-        output.send("Alice".to_string()).await.unwrap();
-        let result = input.next().await;
-        assert!(result.is_some());
-        if let Some(person_with_address) = result {
-            assert_eq!(person_with_address.name, "Alice");
-            assert_eq!(person_with_address.age, 30);
-            assert_eq!(person_with_address.address, "123 Main St");
-        } else {
-            panic!("Expected a PersonWithAgeAndAddress but got None");
+        for i in 0..100 {
+            let name = format!("{}", i);
+            output.send(name).await.unwrap();
         }
+        drop(output); // Close the output channel to signal completion
+        let mut results = Vec::new();
+        for _ in 0..100 {
+            if let Some(person_with_address) = input.next().await {
+                results.push(person_with_address);
+            } else {
+                break;
+            }
+        }
+        assert_eq!(results.len(), 11);
     }
 }
