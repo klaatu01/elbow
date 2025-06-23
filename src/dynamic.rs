@@ -1,9 +1,9 @@
-use crate::{Context, Pipeable};
+use crate::{Context, Pipe};
 use std::any::Any;
 
-pub struct DynAdapter<P, I, O>
+pub struct DynPipeAdapter<P, I, O>
 where
-    P: Pipeable<I, O> + Send + Sync + 'static,
+    P: Pipe<I, O> + Send + Sync + 'static,
     I: Any + Send + Sync + 'static,
     O: Any + Send + Sync + 'static,
 {
@@ -11,31 +11,31 @@ where
     _phantom: std::marker::PhantomData<(I, O)>,
 }
 
-impl<P, I, O> DynAdapter<P, I, O>
+impl<P, I, O> DynPipeAdapter<P, I, O>
 where
-    P: Pipeable<I, O> + Send + Sync + 'static,
+    P: Pipe<I, O> + Send + Sync + 'static,
     I: Any + Send + Sync + 'static,
     O: Any + Send + Sync + 'static,
 {
     pub fn new(pipe: P) -> Self {
-        DynAdapter {
+        DynPipeAdapter {
             pipe,
             _phantom: std::marker::PhantomData,
         }
     }
 
-    pub fn into_dyn(self) -> Box<dyn DynPipeline> {
+    pub fn into_dyn(self) -> Box<dyn DynPipe> {
         Box::new(self)
     }
 }
 
-pub trait DynPipeline: Send + Sync + 'static {
+pub trait DynPipe: Send + Sync + 'static {
     fn run_box(self: Box<Self>, ctx: Context);
 }
 
-impl<P, I, O> DynPipeline for DynAdapter<P, I, O>
+impl<P, I, O> DynPipe for DynPipeAdapter<P, I, O>
 where
-    P: Pipeable<I, O> + Send + Sync + 'static,
+    P: Pipe<I, O> + Send + Sync + 'static,
     I: Any + Send + Sync + 'static,
     O: Any + Send + Sync + 'static,
 {

@@ -1,17 +1,15 @@
-use tokio::time::{Instant, timeout};
-
-use crate::pipeable::{Context, Pipeable};
-use crate::{DynAdapter, DynPipeline};
+use crate::{Context, DynPipe, DynPipeAdapter, Pipe};
 use std::any::Any;
 use std::marker::PhantomData;
 use std::sync::atomic::AtomicU64;
 use std::time::Duration;
+use tokio::time::{Instant, timeout};
 
 pub struct ConcurrentPipeline<I, O, P>
 where
     I: Any + Send + Sync + 'static,
     O: Any + Send + Sync + 'static,
-    P: Pipeable<I, O> + Send + Sync + 'static,
+    P: Pipe<I, O> + Send + Sync + 'static,
 {
     next: AtomicU64,
     txs: Vec<async_channel::Sender<Box<dyn Any + Send + Sync>>>,
@@ -25,7 +23,7 @@ impl<I, O, P> ConcurrentPipeline<I, O, P>
 where
     I: Any + Send + Sync + 'static,
     O: Any + Send + Sync + 'static,
-    P: Pipeable<I, O> + Clone + Send + Sync + 'static,
+    P: Pipe<I, O> + Clone + Send + Sync + 'static,
 {
     pub fn new(concurrency: usize, pipe: P) -> Self {
         let mut txs = Vec::with_capacity(concurrency);
@@ -52,7 +50,7 @@ impl<I, O, P> Clone for ConcurrentPipeline<I, O, P>
 where
     I: Any + Send + Sync + 'static,
     O: Any + Send + Sync + 'static,
-    P: Pipeable<I, O> + Clone + Send + Sync + 'static,
+    P: Pipe<I, O> + Clone + Send + Sync + 'static,
 {
     fn clone(&self) -> Self {
         ConcurrentPipeline::new(self.concurrency, self.pipe.clone())
@@ -63,7 +61,7 @@ pub struct BatchPipeline<I, O, P>
 where
     I: Any + Send + Sync + 'static,
     O: Any + Send + Sync + 'static,
-    P: Pipeable<I, O> + Send + Sync + 'static,
+    P: Pipe<I, O> + Send + Sync + 'static,
 {
     batch_size: usize,
     window: Duration,
@@ -75,7 +73,7 @@ impl<I, O, P> Clone for BatchPipeline<I, O, P>
 where
     I: Any + Send + Sync + 'static,
     O: Any + Send + Sync + 'static,
-    P: Pipeable<I, O> + Clone + Send + Sync + 'static,
+    P: Pipe<I, O> + Clone + Send + Sync + 'static,
 {
     fn clone(&self) -> Self {
         BatchPipeline {
@@ -87,7 +85,7 @@ where
     }
 }
 
-pub trait PipelineExt<I, O>: Pipeable<I, O> + Clone + Send + Sync + 'static
+pub trait PipelineExt<I, O>: Pipe<I, O> + Clone + Send + Sync + 'static
 where
     I: Any + Send + Sync + 'static,
     O: Any + Send + Sync + 'static,
@@ -116,15 +114,15 @@ impl<I, O, P> PipelineExt<I, O> for P
 where
     I: Any + Send + Sync + 'static,
     O: Any + Send + Sync + 'static,
-    P: Pipeable<I, O> + Clone + Send + Sync + 'static,
+    P: Pipe<I, O> + Clone + Send + Sync + 'static,
 {
 }
 
-impl<I, O, P> Pipeable<I, O> for ConcurrentPipeline<I, O, P>
+impl<I, O, P> Pipe<I, O> for ConcurrentPipeline<I, O, P>
 where
     I: Any + Send + Sync + 'static,
     O: Any + Send + Sync + 'static,
-    P: Pipeable<I, O> + Clone + Send + Sync + 'static,
+    P: Pipe<I, O> + Clone + Send + Sync + 'static,
 {
     async fn process(&self, input: I) -> Option<O> {
         let next = self.next.load(std::sync::atomic::Ordering::Relaxed);
@@ -138,12 +136,11 @@ where
         None
     }
 
-    // **override run** to do N-way fan-out/fan-in
     fn run(self: Box<Self>, ctx: Context) {
         for rx in self.rxs.iter() {
             let worker_pipe = self.pipe.clone();
             let worker_ctx = Context::new(rx.clone(), ctx.output_stream.clone());
-            let boxed: Box<dyn DynPipeline> = DynAdapter::new(worker_pipe).into_dyn();
+            let boxed: Box<dyn DynPipe> = DynPipeAdapter::new(worker_pipe).into_dyn();
             boxed.run_box(worker_ctx);
         }
 
@@ -155,11 +152,11 @@ where
     }
 }
 
-impl<I, O, P> Pipeable<I, O> for BatchPipeline<I, O, P>
+impl<I, O, P> Pipe<I, O> for BatchPipeline<I, O, P>
 where
     I: Any + Send + Sync + 'static,
     O: Any + Send + Sync + 'static,
-    P: Pipeable<I, O> + Send + Sync + 'static,
+    P: Pipe<I, O> + Send + Sync + 'static,
 {
     async fn process(&self, input: I) -> Option<O> {
         self.pipe.process(input).await
