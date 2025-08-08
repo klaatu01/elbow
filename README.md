@@ -1,6 +1,6 @@
 # Elbow
 
-Elbow is a lightweight, extensible asynchronous pipeline library for Rust, empowering developers to compose, transform, and process streams of heterogeneous data with ease. Inspired by Unix pipes and functional programming paradigms, Elbow provides a flexible API for building complex data workflows with support for branching, filtering, batching, and concurrency.
+An async pipeline builder
 
 ## Features
 
